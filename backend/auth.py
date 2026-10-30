@@ -94,14 +94,18 @@ def register_user(username=None, email=None, password=None, full_name=None, role
 
 
 def create_or_get_admin_user():
-    """Create the local demo admin, allowing credentials to be overridden."""
+    """Create an admin only when secure credentials are configured."""
     admin_username = os.environ.get("ADMIN_USERNAME", "admin")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    admin_password = os.environ.get("ADMIN_PASSWORD")
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@fraudnova.ai")
 
     admin = User.query.filter_by(username=admin_username).first()
     if admin:
         return admin
+
+    if not admin_password:
+        print("[INFO] ADMIN_PASSWORD is not set; skipping admin creation.")
+        return None
 
     admin = User(
         username=admin_username,
