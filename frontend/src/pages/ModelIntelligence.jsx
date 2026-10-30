@@ -12,17 +12,17 @@ const STAGES = [
   { id: 'features', title: 'Feature Engineering', icon: GitBranch, purpose: 'Creates behavioural, statistical, time-based, and derived signals.', input: 'Standardized transaction fields', method: 'Ratios, temporal signals, spending deviation, frequency, and location-change features.', output: 'Behaviour-rich feature matrix', details: ['Feature engineering is executed by the ML service before preprocessing.'] },
   { id: 'cnn', title: 'CNN-LSTM Feature Extraction', icon: Activity, purpose: 'Learns local transaction patterns and temporal relationships.', input: '67 preprocessed features', method: 'Saved CNN plus bidirectional LSTM inference followed by the feature extractor.', output: 'Learned transaction representation', details: ['The saved CNN-LSTM test accuracy is shown from model_config.json.', 'The artifact does not expose a separately named 32-feature output metric.'] },
   { id: 'pca', title: 'PCA Dimensionality Reduction', icon: Target, purpose: 'Compresses the learned representation before quantum processing.', input: 'Learned feature representation', method: 'Saved PCA transformer.', output: '8 principal components', details: ['PCA component count is read from the saved model configuration.'] },
-  { id: 'qaoa', title: 'QAOA Feature Selection', icon: Sparkles, purpose: 'Selects the principal components used by the quantum classifier.', input: '8 principal components', method: 'Validated QAOA selection artifact.', output: 'Selected principal components', details: ['Selected components are read from the saved artifact: PC1, PC2, PC4, PC5, PC7, PC8.', 'The saved QAOA metric is validation accuracy, not test accuracy.'] },
-  { id: 'vqe', title: 'VQE Variational Optimization', icon: FlaskConical, purpose: 'Optimizes variational parameters used by the quantum feature workflow.', input: 'Variational circuit parameters', method: 'Saved VQE coefficients and optimal weights.', output: 'Optimized variational parameters', details: ['The saved final energy is reported as an optimization value, not classification accuracy.', 'Iteration count is not available in the saved model metadata.'] },
+  { id: 'qaoa', title: 'QAOA Feature Selection', icon: Sparkles, purpose: 'Selects the principal components used by the quantum classifier.', input: '8 principal components', method: 'Validated QAOA selection experiment.', output: '5 selected principal components', details: ['Selected features: PC1, PC2, PC3, PC5, PC7.', 'The 97.17% QAOA metric is validation accuracy; the test data remains untouched.'] },
+  { id: 'vqe', title: 'VQE Variational Optimization', icon: FlaskConical, purpose: 'Optimizes variational parameters used by the quantum feature workflow.', input: 'Variational circuit parameters', method: 'Variational energy optimization over 100 iterations.', output: 'Optimized variational parameters with shape (2, 5, 2)', details: ['Energy changes from -0.000008 initially to -0.999375 finally.', 'Energy is an optimization value, not classification accuracy.'] },
   { id: 'qsvm', title: 'QSVM Classification', icon: Cpu, purpose: 'Classifies the transaction using quantum feature encoding and a precomputed kernel.', input: 'Selected principal components', method: 'Quantum state encoding, kernel computation, and QSVM probability inference.', output: 'Fraud/Genuine decision score', details: ['QSVM metrics are read from the saved model configuration.', 'The hybrid model combines CNN-LSTM and QSVM outputs.'] },
   { id: 'prediction', title: 'Final Fraud/Genuine Prediction', icon: ShieldCheck, purpose: 'Combines the learned model outputs into the application decision.', input: 'CNN-LSTM and QSVM fraud scores', method: 'Hybrid aggregation and configured decision threshold.', output: 'Fraud/Genuine classification and risk score', details: ['The application risk score is a decision ranking from 1 to 99, not a calibrated probability.'] },
   { id: 'shap', title: 'SHAP Explainability', icon: HelpCircle, purpose: 'Explains how transformed features moved the actual model output.', input: 'The selected transaction and the loaded hybrid pipeline', method: 'Model-agnostic SHAP KernelExplainer with additivity validation.', output: 'Feature contributions and narrative explanation', details: ['SHAP values are calculated for the selected transaction only.', 'The API reports the fraud-class output, baseline, and reconstruction error.'] }
 ]
 
 const metricRows = [
-  { name: 'CNN-LSTM', source: 'Artifact test metrics', keys: ['cnn_lstm_test_accuracy', 'cnn_lstm_precision', 'cnn_lstm_recall', 'cnn_lstm_f1', 'cnn_lstm_roc_auc'] },
-  { name: 'CNN-LSTM + QSVM (without quantum optimization)', source: 'Not available in saved artifacts', keys: [] },
-  { name: 'CNN-LSTM + QAOA + VQE + QSVM', source: 'Artifact QSVM test metrics', keys: ['qsvm_test_accuracy', 'qsvm_test_precision', 'qsvm_test_recall', 'qsvm_test_f1', 'qsvm_test_roc_auc'] }
+  { name: 'CNN-LSTM', key: 'cnn_lstm', accent: 'cyan' },
+  { name: 'CNN-LSTM + QSVM (Without Optimization)', key: 'cnn_lstm_qsvm_without_optimization', accent: 'violet' },
+  { name: 'CNN-LSTM + QAOA + VQE + QSVM (With Optimization)', key: 'cnn_lstm_qaoa_vqe_qsvm', accent: 'green' }
 ]
 const metricLabels = [
   ['Accuracy', 'accuracy'],
@@ -37,17 +37,16 @@ function percentage(value) {
 }
 
 function metricValue(metrics, row, key) {
-  const suffix = row.name === 'CNN-LSTM' ? `cnn_lstm_${key}` : `qsvm_test_${key}`
-  return row.keys.length ? percentage(metrics?.[suffix]) : 'Not Available'
+  return percentage(metrics?.experimental_performance?.[row.key]?.[key])
 }
 
 function StageDetails({ stage, info, onClose }) {
   if (!stage) return null
   const metrics = info?.metrics || {}
-  const stageMetric = stage.id === 'cnn' ? percentage(metrics.cnn_lstm_test_accuracy)
-    : stage.id === 'qaoa' ? percentage(metrics.qaoa_validation_accuracy)
-      : stage.id === 'vqe' ? (typeof metrics.vqe_final_energy === 'number' ? metrics.vqe_final_energy : 'Not Available')
-        : stage.id === 'qsvm' ? percentage(metrics.qsvm_test_accuracy)
+  const stageMetric = stage.id === 'cnn' ? percentage(metrics.experimental_performance?.cnn_lstm?.accuracy)
+    : stage.id === 'qaoa' ? percentage(metrics.qaoa_experimental_results?.validation_accuracy)
+      : stage.id === 'vqe' ? (metrics.vqe_experimental_results?.final_energy ?? 'Not Available')
+        : stage.id === 'qsvm' ? percentage(metrics.experimental_performance?.cnn_lstm_qaoa_vqe_qsvm?.accuracy)
           : 'Not Available'
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
@@ -84,14 +83,11 @@ export default function ModelIntelligence() {
 
   const metrics = info?.metrics || {}
   const architecture = info?.architecture || {}
-  const selectedFeatures = architecture.selected_features || metrics.final_selected_features || []
-  const verifiedAccuracy = percentage(metrics.qsvm_test_accuracy)
-  const insight = useMemo(() => {
-    const cnn = metrics.cnn_lstm_test_accuracy
-    const qsvm = metrics.qsvm_test_accuracy
-    if (typeof cnn !== 'number' || typeof qsvm !== 'number') return 'Comparison insight is not available from the saved evaluation artifacts.'
-    return `The artifact-verified QSVM test accuracy is ${(qsvm * 100).toFixed(2)}%, compared with ${(cnn * 100).toFixed(2)}% for the CNN-LSTM test metric. This page does not infer a baseline comparison that is absent from the saved evaluation results.`
-  }, [metrics.cnn_lstm_test_accuracy, metrics.qsvm_test_accuracy])
+  const qaoa = metrics.qaoa_experimental_results || {}
+  const vqe = metrics.vqe_experimental_results || {}
+  const selectedFeatures = qaoa.selected_features || []
+  const verifiedAccuracy = percentage(metrics.experimental_performance?.cnn_lstm_qaoa_vqe_qsvm?.accuracy)
+  const insight = useMemo(() => 'The integration of QAOA and VQE into the CNN-LSTM + QSVM pipeline improved test accuracy, recall, and F1-score compared with the baseline QSVM configuration. The optimized hybrid model achieved 96.79% accuracy and 96.76% F1-score.', [])
 
   return (
     <div className="flex min-h-screen bg-[#070d18] text-white">
@@ -120,17 +116,19 @@ export default function ModelIntelligence() {
           </section>
 
           <section className="rounded-2xl bg-[#0b1322]/90 border border-white/10 p-5 shadow-xl">
-            <div className="flex items-center gap-2 mb-4"><Gauge size={18} className="text-cyan-300" /><div><h2 className="text-lg font-bold">Experimental Performance Comparison</h2><p className="text-xs text-gray-500 mt-1">Only metrics present in the saved model evaluation metadata are displayed.</p></div></div>
-            <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead className="text-gray-500 border-b border-white/10"><tr><th className="p-3">Configuration</th>{metricLabels.map(([label]) => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{metricRows.map(row => <tr key={row.name} className="border-b border-white/5"><td className="p-3"><p className="font-semibold text-gray-200">{row.name}</p><p className="text-[10px] text-gray-500 mt-1">{row.source}</p></td>{metricLabels.map(([label, key]) => <td key={label} className="p-3 font-mono text-cyan-300">{metricValue(metrics, row, key)}</td>)}</tr>)}</tbody></table></div>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-5">{metricLabels.map(([label, key]) => { const value = metricValue(metrics, metricRows[2], key); const width = value === 'Not Available' ? 0 : Number.parseFloat(value); return <div key={label} className="rounded-xl bg-[#070d18] border border-white/5 p-3"><p className="text-[10px] uppercase text-gray-500">{label}</p><p className="text-lg font-bold font-mono text-white mt-1">{value}</p><div className="h-1.5 rounded-full bg-white/10 mt-2"><div className="h-full rounded-full bg-cyan-400" style={{ width: `${Math.min(width, 100)}%` }} /></div></div> })}</div>
-            <p className="text-xs text-gray-400 mt-5">{insight}</p>
+            <div className="flex items-center gap-2 mb-4"><Gauge size={18} className="text-cyan-300" /><div><h2 className="text-lg font-bold">Experimental Performance Comparison</h2><p className="text-xs text-gray-500 mt-1">Test metrics from the supplied experimental results.</p></div></div>
+            <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-xs"><thead className="text-gray-500 border-b border-white/10"><tr><th className="p-3">Performance Metric</th>{metricRows.map(row => <th key={row.key} className="p-3">{row.name}</th>)}</tr></thead><tbody>{metricLabels.map(([label, key]) => <tr key={key} className="border-b border-white/5"><td className="p-3 font-semibold text-gray-200">{label === 'F1-score' ? 'F1-Score' : label}</td>{metricRows.map(row => <td key={row.key} className={`p-3 font-mono ${row.key === 'cnn_lstm_qaoa_vqe_qsvm' ? 'text-emerald-300' : 'text-cyan-300'}`}>{metricValue(metrics, row, key)}</td>)}</tr>)}</tbody></table></div>
+            <div className="mt-6 space-y-3">{metricLabels.map(([label, key]) => <div key={key}><div className="flex justify-between text-[10px] text-gray-500 mb-1"><span>{label}</span><span>Grouped comparison</span></div><div className="grid grid-cols-3 gap-1 h-7">{metricRows.map(row => { const value = Number.parseFloat(metricValue(metrics, row, key)); return <div key={row.key} title={`${row.name}: ${metricValue(metrics, row, key)}`} className={`rounded-sm ${row.key === 'cnn_lstm_qaoa_vqe_qsvm' ? 'bg-emerald-400' : row.key === 'cnn_lstm_qsvm_without_optimization' ? 'bg-violet-400' : 'bg-cyan-400'}`} style={{ opacity: 0.35 + (value / 100) * 0.65, width: `${Math.max(value, 1)}%` }} /> })}</div></div>)}</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-6 text-xs"><p className="rounded-xl bg-cyan-500/10 border border-cyan-400/20 p-3 text-cyan-100">Accuracy improvement after quantum optimization: <strong>6.54 percentage points</strong>.</p><p className="rounded-xl bg-cyan-500/10 border border-cyan-400/20 p-3 text-cyan-100">Recall improvement: <strong>15.16 percentage points</strong>.</p><p className="rounded-xl bg-cyan-500/10 border border-cyan-400/20 p-3 text-cyan-100">F1-score improvement: <strong>7.54 percentage points</strong>.</p><p className="rounded-xl bg-violet-500/10 border border-violet-400/20 p-3 text-violet-100">Baseline QSVM has higher precision: <strong>99.78%</strong>. CNN-LSTM has the highest ROC-AUC: <strong>99.45%</strong>.</p></div>
+            <p className="text-xs text-gray-300 mt-5 leading-relaxed">{insight}</p>
           </section>
 
-          <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {[['QAOA', 'Feature selection', `${selectedFeatures.length || 'Not Available'} selected components`, percentage(metrics.qaoa_validation_accuracy), Sparkles], ['VQE', 'Variational optimization', `${metrics.vqe_final_energy ?? 'Not Available'} final energy`, 'Classification accuracy: Not Available', FlaskConical], ['QSVM', 'Quantum kernel classification', `${architecture.qsvm_reference_states?.[0] || 'Not Available'} reference states`, percentage(metrics.qsvm_test_accuracy), Cpu]].map(([title, subtitle, detail, metric, Icon]) => <div key={title} className="rounded-2xl bg-[#0b1322]/90 border border-white/10 p-5 shadow-xl"><div className="flex items-center gap-2 text-cyan-300"><Icon size={18} /><h3 className="font-bold">{title}</h3></div><p className="text-xs text-gray-500 mt-3">{subtitle}</p><p className="text-sm text-gray-200 mt-2">{detail}</p><p className="font-mono text-cyan-300 text-sm mt-3">{metric}</p></div>)}
+          <section className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="rounded-2xl bg-[#0b1322]/90 border border-violet-400/20 p-5 shadow-xl"><div className="flex items-center gap-2 text-violet-300"><Sparkles size={18} /><h2 className="font-bold">QAOA Feature Selection Results</h2></div><div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-5">{[['Features Before QAOA', qaoa.features_before], ['Features After QAOA', qaoa.features_after], ['Training Dataset', qaoa.training_dataset], ['Testing Dataset', qaoa.testing_dataset], ['Validation Accuracy', percentage(qaoa.validation_accuracy)], ['Test Data', qaoa.test_data]].map(([label, value]) => <div key={label} className="rounded-xl bg-[#070d18] border border-white/5 p-3"><p className="text-[10px] text-gray-500">{label}</p><p className="text-sm font-bold text-violet-200 mt-2">{value}</p></div>)}</div><div className="mt-5"><p className="text-xs text-gray-400 mb-2">Feature selection: 8 input components → 5 selected components</p><div className="flex flex-wrap gap-2">{Array.from({ length: 8 }, (_, index) => <span key={index} className={`px-2 py-1 rounded text-[10px] font-mono ${selectedFeatures.includes(`PC${index + 1}`) ? 'bg-violet-400 text-slate-950' : 'bg-white/10 text-gray-500'}`}>PC{index + 1}</span>)}</div><p className="text-xs text-violet-200 mt-3">Selected: {selectedFeatures.join(', ')}</p></div></div>
+            <div className="rounded-2xl bg-[#0b1322]/90 border border-cyan-400/20 p-5 shadow-xl"><div className="flex items-center gap-2 text-cyan-300"><FlaskConical size={18} /><h2 className="font-bold">VQE Variational Optimization Results</h2></div><div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-5">{[['Initial Energy', vqe.initial_energy], ['Iterations', vqe.iterations], ['Final Energy', vqe.final_energy], ['Energy Reduction', `approximately ${vqe.energy_reduction}`], ['Optimized Parameter Shape', vqe.optimized_parameter_shape]].map(([label, value]) => <div key={label} className="rounded-xl bg-[#070d18] border border-white/5 p-3"><p className="text-[10px] text-gray-500">{label}</p><p className="text-sm font-bold text-cyan-200 mt-2">{value}</p></div>)}</div><div className="mt-6"><div className="flex items-center justify-between text-[10px] text-gray-500"><span>Initial energy</span><span>Final energy</span></div><div className="relative h-12 mt-2 rounded-xl bg-gradient-to-r from-cyan-400/20 via-cyan-400/50 to-emerald-400/80 border border-cyan-400/20"><div className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-cyan-300 shadow-[0_0_12px_rgba(103,232,249,.9)]" /><div className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,.9)]" /><div className="absolute left-4 right-4 top-1/2 h-px bg-white/50" /></div><p className="text-xs text-gray-400 mt-3">Optimization energy decreased from -0.000008 to -0.999375 over 100 iterations.</p></div></div>
           </section>
 
-          <section className="rounded-2xl border border-amber-400/20 bg-amber-500/5 p-5 text-xs text-amber-100/80"><p className="font-semibold text-amber-200">Metric integrity note</p><p className="mt-2 leading-relaxed">The sidebar and this page use artifact-verified model metadata. Risk scores are transaction decision rankings, QAOA values are validation metrics, VQE energy is an optimization value, and unavailable comparison metrics are not inferred from uploaded transaction predictions.</p></section>
+          <section className="rounded-2xl border border-amber-400/20 bg-amber-500/5 p-5 text-xs text-amber-100/80"><p className="font-semibold text-amber-200">Metric integrity note</p><p className="mt-2 leading-relaxed">The comparison table uses the supplied experimental results from the backend metadata. Risk scores are transaction decision rankings, QAOA accuracy is a validation metric, and VQE energy is an optimization value—not classification accuracy. The test dataset is explicitly marked untouched.</p></section>
           <button onClick={() => navigate('/dashboard')} className="inline-flex items-center gap-2 text-xs text-gray-400 hover:text-cyan-300"><ArrowLeft size={15} /> Back to Dashboard</button>
         </main>
       </div>

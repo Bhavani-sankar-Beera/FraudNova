@@ -124,8 +124,8 @@ export default function Sidebar() {
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
                 : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
             }`}>
-              {modelInfo?.ml_loaded && typeof modelInfo.metrics?.qsvm_test_accuracy === 'number'
-                ? `${(modelInfo.metrics.qsvm_test_accuracy * 100).toFixed(2)}%`
+              {modelInfo?.ml_loaded && typeof modelInfo.metrics?.experimental_performance?.cnn_lstm_qaoa_vqe_qsvm?.accuracy === 'number'
+                ? `${(modelInfo.metrics.experimental_performance.cnn_lstm_qaoa_vqe_qsvm.accuracy * 100).toFixed(2)}%`
                 : 'N/A'}
             </span>
           </div>
