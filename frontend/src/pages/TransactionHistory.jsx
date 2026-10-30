@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Search, Download, Filter, RefreshCw, ArrowLeft, ShieldAlert, CheckCircle2, FileSpreadsheet } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import Navbar from '../components/Navbar'
+import PageNavigation from '../components/PageNavigation'
 import TransactionTable from '../components/TransactionTable'
 import { getTransactions } from '../services/api'
 
@@ -104,6 +105,14 @@ export default function TransactionHistory() {
       <div className="flex-1 min-h-screen flex flex-col">
         <Navbar title="Historical Ledger & Audit Logs" />
         <main className="p-6 md:p-8 space-y-6 max-w-[1600px] mx-auto w-full">
+          <PageNavigation
+            breadcrumbs={[
+              { label: 'Dashboard', to: '/dashboard' },
+              { label: 'Transaction History' }
+            ]}
+            fallback="/dashboard"
+            fallbackLabel="Back to Dashboard"
+          />
 
           {/* Header & Export Actions */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -194,4 +203,3 @@ export default function TransactionHistory() {
     </div>
   )
 }
-

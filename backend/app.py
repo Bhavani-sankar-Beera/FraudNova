@@ -1,8 +1,9 @@
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, session, send_file
 from flask_cors import CORS
 from flask_session import Session
 from datetime import datetime, timedelta
 from functools import wraps
+from io import BytesIO
 import os
 import secrets
 import sys
@@ -19,9 +20,20 @@ from auth import (
 )
 from database import SQLALCHEMY_DATABASE_URI, SQLALCHEMY_TRACK_MODIFICATIONS
 from ml_service import ml_service
+from bulk_analysis import (
+    MAX_RECORDS,
+    csv_bytes,
+    excel_bytes,
+    new_batch_id,
+    preview_rows,
+    read_upload,
+    template_bytes,
+    validate_frame,
+)
 
 # Initialize Flask app
 app = Flask(__name__)
+bulk_batches = {}
 
 # Database configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = SQLALCHEMY_DATABASE_URI
@@ -102,9 +114,7 @@ def _make_pipeline():
         "Feature Engineering",
         "CNN + LSTM",
         "Feature Extraction",
-        "QCNN",
         "QSVM",
-        "VQE + QAOA",
         "Prediction",
     ]
     return [{"name": s, "status": "completed"} for s in steps]
@@ -116,51 +126,49 @@ def _calculate_risk_score(amount, tx_freq, avg_spending, distance):
     return max(0, risk)
 
 
-def _generate_shap_values(transaction_data, risk_score, prediction):
-    """Generate SHAP values based on transaction features."""
-    amount = transaction_data.get('amount', 0)
-    avg_spending = transaction_data.get('average_spending', 0)
-    tx_freq = transaction_data.get('transaction_frequency', 0)
-    distance = transaction_data.get('distance_from_previous_location', 0)
-    device_type = transaction_data.get('device_type', '').lower()
-    
-    shap_values = [
-        {
-            "feature": "Transaction Amount",
-            "value": amount,
-            "impact": round(min(0.7, (amount / max(1, avg_spending * 5))), 3)
-        },
-        {
-            "feature": "Transaction Frequency",
-            "value": tx_freq,
-            "impact": round(min(0.5, tx_freq * 0.1), 3)
-        },
-        {
-            "feature": "Distance Change",
-            "value": distance,
-            "impact": round(min(0.4, distance / 1000), 3)
-        },
-        {
-            "feature": "Device Newness",
-            "value": device_type,
-            "impact": 0.1 if 'new' in device_type else -0.02
-        },
-        {
-            "feature": "Average Spending",
-            "value": avg_spending,
-            "impact": -0.03
-        }
-    ]
-    
-    return shap_values
-
-
 def _generate_explanation(shap_values, prediction):
     """Generate text explanation from SHAP values."""
     if prediction == 'Fraud':
         return "The transaction was classified as high risk mainly because the transaction amount is significantly higher than the customer's average spending. The use of a new device and large location change also contributed to the fraud prediction."
     else:
         return "The transaction pattern matches the customer's historical behavior. The amount is reasonable for this customer, and the location is familiar."
+
+
+def _transaction_model_input(txn):
+    """Convert a stored transaction into the model's prediction input shape."""
+    return {
+        "transaction_id": txn.transaction_id,
+        "customer_id": txn.customer_id,
+        "amount": txn.amount,
+        "transaction_time": txn.transaction_time,
+        "merchant_category": txn.merchant_category,
+        "payment_method": txn.payment_method,
+        "location": txn.location,
+        "device_type": txn.device_type,
+        "transaction_frequency": txn.transaction_frequency,
+        "average_spending": txn.average_spending,
+        "previous_transaction_amount": txn.previous_transaction_amount,
+        "distance_from_previous_location": txn.distance_from_previous_location,
+    }
+
+
+def _bulk_prediction(record):
+    """Run the existing model pipeline for one bulk record."""
+    if not ml_service.is_loaded:
+        raise RuntimeError(f"Trained model is unavailable: {ml_service.load_error}")
+    # SHAP KernelExplainer is intentionally reserved for single-transaction
+    # analysis; calculating it for every uploaded row makes bulk analysis
+    # disproportionately slow without changing the prediction.
+    result = ml_service.predict_transaction(record, include_shap=False)
+    return {
+        "prediction": result["prediction"],
+        "risk_score": result["risk_score"],
+        "confidence": result.get("confidence"),
+        "shap": result["shap"],
+        "shap_metadata": result.get("shap_metadata"),
+        "explanation": result["explanation"],
+        "mode": result.get("mode", "ML_QUANTUM_HYBRID"),
+    }
 
 
 # ==================== Authentication Routes ====================
@@ -172,8 +180,222 @@ def health():
         "status": "ok",
         "service": "FraudNova AI Backend",
         "ml_loaded": ml_service.is_loaded,
+        "ml_error": ml_service.load_error,
         "model_version": "2.4.0-colab" if ml_service.is_loaded else "demo"
     })
+
+
+@app.route('/api/model/status', methods=['GET'])
+@login_required
+def model_status():
+    """Return the load state and compatibility error for saved artifacts."""
+    return jsonify({
+        "success": True,
+        "loaded": ml_service.is_loaded,
+        "error": ml_service.load_error,
+        "info": ml_service.get_model_info(),
+    }), 200
+
+
+@app.route('/api/bulk/template', methods=['GET'])
+@login_required
+def bulk_template():
+    return send_file(
+        BytesIO(template_bytes()),
+        as_attachment=True,
+        download_name="fraudnova_bulk_template.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route('/api/bulk/analyze', methods=['POST'])
+@login_required
+def bulk_analyze():
+    upload = request.files.get("file")
+    if not upload:
+        return jsonify({"success": False, "message": "Please upload a CSV or Excel file."}), 400
+    if not ml_service.is_loaded:
+        return jsonify({
+            "success": False,
+            "message": "Trained model artifacts are unavailable. Bulk prediction was not generated.",
+            "model_error": ml_service.load_error,
+        }), 503
+
+    try:
+        frame, filename, file_size = read_upload(upload)
+        validation = validate_frame(frame)
+    except ValueError as exc:
+        return jsonify({"success": False, "message": str(exc)}), 400
+
+    if validation["missing_columns"]:
+        return jsonify({
+            "success": False,
+            "message": "Required columns are missing.",
+            "missing_columns": validation["missing_columns"],
+            "total_records": len(frame),
+            "preview": preview_rows(frame),
+        }), 422
+
+    results = []
+    for record in validation["valid_rows"]:
+        try:
+            prediction = _bulk_prediction(record)
+            results.append({
+                **record,
+                "prediction": prediction["prediction"],
+                "risk_score": prediction["risk_score"],
+                "confidence": prediction["confidence"],
+                "shap": prediction["shap"],
+                "shap_metadata": prediction["shap_metadata"],
+                "explanation": prediction["explanation"],
+                "mode": prediction["mode"],
+                "status": "processed",
+            })
+        except Exception as exc:
+            results.append({
+                **record,
+                "prediction": "Invalid",
+                "risk_score": None,
+                "confidence": None,
+                "shap": [],
+                "shap_metadata": None,
+                "explanation": f"Prediction failed: {exc}",
+                "mode": "ERROR",
+                "status": "failed",
+            })
+
+    batch_id = new_batch_id()
+    bulk_batches[batch_id] = {
+        "filename": filename,
+        "file_size": file_size,
+        "created_at": datetime.utcnow().isoformat(),
+        "results": results,
+        "validation_errors": validation["errors"],
+    }
+    fraud_count = sum(row["prediction"] == "Fraud" for row in results)
+    genuine_count = sum(row["prediction"] == "Genuine" for row in results)
+    return jsonify({
+        "success": True,
+        "batch_id": batch_id,
+        "filename": filename,
+        "total_records": len(frame),
+        "valid_records": len(validation["valid_rows"]),
+        "invalid_records": len(validation["errors"]) + sum(
+            row["status"] == "failed" for row in results
+        ),
+        "duplicate_records": validation["duplicate_records"],
+        "fraud_count": fraud_count,
+        "genuine_count": genuine_count,
+        "detection_rate": round((fraud_count / len(results)) * 100, 2) if results else 0,
+        "validation_errors": validation["errors"],
+        "preview": preview_rows(frame),
+        "results": results,
+        "model_mode": "trained" if ml_service.is_loaded else "unavailable",
+    }), 200
+
+
+@app.route('/api/bulk/<batch_id>', methods=['GET'])
+@login_required
+def bulk_results(batch_id):
+    batch = bulk_batches.get(batch_id)
+    if not batch:
+        return jsonify({"success": False, "message": "Bulk analysis batch not found."}), 404
+    results = batch["results"]
+    fraud_count = sum(row["prediction"] == "Fraud" for row in results)
+    return jsonify({
+        "success": True,
+        "batch_id": batch_id,
+        "filename": batch["filename"],
+        "total_records": len(results),
+        "fraud_count": fraud_count,
+        "genuine_count": sum(row["prediction"] == "Genuine" for row in results),
+        "invalid_records": sum(row["prediction"] == "Invalid" for row in results),
+        "results": results,
+        "validation_errors": batch["validation_errors"],
+    }), 200
+
+
+@app.route('/api/bulk/<batch_id>/transactions/<transaction_id>/shap', methods=['GET'])
+@login_required
+def bulk_transaction_shap(batch_id, transaction_id):
+    batch = bulk_batches.get(batch_id)
+    if not batch:
+        return jsonify({"success": False, "message": "Bulk analysis batch not found."}), 404
+    result = next(
+        (row for row in batch["results"] if str(row.get("transaction_id")) == transaction_id),
+        None,
+    )
+    if not result:
+        return jsonify({"success": False, "message": "Transaction not found in batch."}), 404
+    if not result.get("shap"):
+        if not ml_service.is_loaded:
+            return jsonify({
+                "success": False,
+                "message": "SHAP explanation is unavailable because the trained model is not loaded.",
+            }), 503
+        try:
+            explanation_result = ml_service.predict_transaction(result, include_shap=True)
+            result["shap"] = explanation_result["shap"]
+            result["shap_metadata"] = explanation_result.get("shap_metadata")
+            result["explanation"] = explanation_result["explanation"]
+        except Exception as exc:
+            app.logger.exception("Bulk SHAP explanation failed")
+            return jsonify({
+                "success": False,
+                "message": "SHAP explanation could not be generated for this transaction.",
+                "model_error": str(exc),
+            }), 503
+    return jsonify({
+        "success": True,
+        "transaction_id": transaction_id,
+        "prediction": result["prediction"],
+        "risk_score": result["risk_score"],
+        "shap": result["shap"],
+        "shap_metadata": result.get("shap_metadata"),
+        "explanation": result["explanation"],
+    }), 200
+
+
+@app.route('/api/bulk/<batch_id>/export', methods=['GET'])
+@login_required
+def bulk_export(batch_id):
+    batch = bulk_batches.get(batch_id)
+    if not batch:
+        return jsonify({"success": False, "message": "Bulk analysis batch not found."}), 404
+    export_format = request.args.get("format", "csv").lower()
+    rows = [
+        {key: value for key, value in row.items() if key != "shap"}
+        for row in batch["results"]
+    ]
+    if export_format == "xlsx":
+        return send_file(
+            BytesIO(excel_bytes(rows)),
+            as_attachment=True,
+            download_name=f"{batch_id}_results.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    if export_format == "csv":
+        return send_file(
+            BytesIO(csv_bytes(rows)),
+            as_attachment=True,
+            download_name=f"{batch_id}_results.csv",
+            mimetype="text/csv",
+        )
+    return jsonify({"success": False, "message": "format must be csv or xlsx"}), 400
+
+
+@app.route('/api/bulk/<batch_id>/validation-report', methods=['GET'])
+@login_required
+def bulk_validation_report(batch_id):
+    batch = bulk_batches.get(batch_id)
+    if not batch:
+        return jsonify({"success": False, "message": "Bulk analysis batch not found."}), 404
+    return send_file(
+        BytesIO(csv_bytes(batch["validation_errors"])),
+        as_attachment=True,
+        download_name=f"{batch_id}_validation_errors.csv",
+        mimetype="text/csv",
+    )
 
 
 @app.route('/api/register', methods=['POST'])
@@ -271,50 +493,30 @@ def predict():
     if existing:
         return jsonify({'success': False, 'message': f'Transaction {data.get("transaction_id")} already exists'}), 400
     
-    # Special case for demo transaction if requested
-    if data.get('transaction_id') == 'TXN10078' and not ml_service.is_loaded:
-        risk_score = 94
-        confidence = 0.945
-        prediction = 'Fraud'
-        mode = 'DEMO'
-        pipeline = _make_pipeline()
-        shap_vals = [
-            {"feature": "Transaction Amount", "value": 85000, "impact": 0.42},
-            {"feature": "Transaction Frequency", "value": 2, "impact": 0.25},
-            {"feature": "Location Change", "value": 850, "impact": 0.18},
-            {"feature": "New Device", "value": "New Device", "impact": 0.10},
-            {"feature": "Merchant Risk", "value": "Electronics", "impact": 0.05},
-            {"feature": "Average Spending", "value": 15000, "impact": -0.03},
-        ]
-        explanation = "The transaction was classified as high risk mainly because the transaction amount is significantly higher than the customer's average spending. The use of a new device and large location change also contributed to the fraud prediction."
-    elif ml_service.is_loaded:
-        try:
-            ml_res = ml_service.predict_transaction(data)
-            prediction = ml_res['prediction']
-            risk_score = ml_res['risk_score']
-            confidence = ml_res['confidence']
-            mode = ml_res.get('mode', 'ML_QUANTUM_HYBRID')
-            pipeline = ml_res.get('pipeline', _make_pipeline())
-            shap_vals = ml_res.get('shap', [])
-            explanation = ml_res.get('explanation', '')
-        except Exception as e:
-            print(f"[app.py] ML inference error, falling back to heuristics: {e}")
-            risk_score = _calculate_risk_score(amount, tx_freq, avg, dist)
-            confidence = round(min(0.999, max(0.5, (risk_score / 100) + 0.05)), 3)
-            prediction = 'Fraud' if risk_score >= 50 else 'Genuine'
-            mode = 'FALLBACK_DEMO'
-            pipeline = _make_pipeline()
-            shap_vals = _generate_shap_values(data, risk_score, prediction)
-            explanation = _generate_explanation(shap_vals, prediction)
-    else:
-        # Calculate heuristic risk score
-        risk_score = _calculate_risk_score(amount, tx_freq, avg, dist)
-        confidence = round(min(0.999, max(0.5, (risk_score / 100) + 0.05)), 3)
-        prediction = 'Fraud' if risk_score >= 50 else 'Genuine'
-        mode = 'DEMO'
-        pipeline = _make_pipeline()
-        shap_vals = _generate_shap_values(data, risk_score, prediction)
-        explanation = _generate_explanation(shap_vals, prediction)
+    if not ml_service.is_loaded:
+        return jsonify({
+            'success': False,
+            'message': 'Trained model artifacts are unavailable. Prediction was not generated.',
+            'model_error': ml_service.load_error,
+        }), 503
+
+    try:
+        ml_res = ml_service.predict_transaction(data)
+    except Exception as exc:
+        app.logger.exception("Model prediction failed")
+        return jsonify({
+            'success': False,
+            'message': 'Model prediction failed. No fallback prediction was generated.',
+            'model_error': str(exc),
+        }), 503
+
+    prediction = ml_res['prediction']
+    risk_score = ml_res['risk_score']
+    confidence = ml_res['confidence']
+    mode = ml_res.get('mode', 'ML_QUANTUM_HYBRID')
+    pipeline = ml_res.get('pipeline', _make_pipeline())
+    shap_vals = ml_res.get('shap', [])
+    explanation = ml_res.get('explanation', '')
     
     time_val = data.get('time') or data.get('transaction_time') or datetime.utcnow().strftime('%H:%M')
     merchant_val = data.get('merchant_category') or data.get('merchant') or 'General'
@@ -381,6 +583,7 @@ def predict():
         'mode': mode,
         'pipeline': pipeline,
         'shap': shap_vals,
+        'shap_metadata': ml_res.get('shap_metadata'),
         'explanation': explanation
     }), 201
 
@@ -517,24 +720,57 @@ def get_transaction_detail(transaction_id):
     
     # Get SHAP values for this transaction
     shap_vals = ShapExplanation.query.filter_by(transaction_id=transaction_id).all()
-    if not shap_vals:
-        txn_dict = {
-            'amount': txn.amount,
-            'average_spending': txn.average_spending,
-            'transaction_frequency': txn.transaction_frequency,
-            'distance_from_previous_location': txn.distance_from_previous_location,
-            'device_type': txn.device_type
+    shap_list = [
+        {
+            'feature': s.feature_name,
+            'value': s.feature_value,
+            'impact': s.shap_value
         }
-        shap_list = _generate_shap_values(txn_dict, txn.risk_score, txn.prediction)
-    else:
-        shap_list = [
-            {
-                'feature': s.feature_name,
-                'value': s.feature_value,
-                'impact': s.shap_value
-            }
-            for s in shap_vals
-        ]
+        for s in shap_vals
+    ]
+
+    explanation = _generate_explanation(shap_list, txn.prediction) if shap_list else None
+    shap_metadata = {
+        "explainer": "SHAP KernelExplainer",
+        "methodology": "Stored SHAP values generated by the FraudNova hybrid pipeline.",
+        "space": "preprocessed model features",
+        "output": "hybrid fraud-class model output (uncalibrated decision score)",
+        "positive_direction": "Fraud",
+        "negative_direction": "Genuine",
+        "model_version": "2.4.0-colab",
+        "source": "stored transaction explanation",
+    } if shap_list else None
+    if not shap_list:
+        if not ml_service.is_loaded:
+            return jsonify({
+                'success': False,
+                'message': 'SHAP explanation is unavailable because the trained model is not loaded.',
+                'model_error': ml_service.load_error,
+            }), 503
+        try:
+            model_result = ml_service.predict_transaction(
+                _transaction_model_input(txn),
+                include_shap=True,
+            )
+            shap_list = model_result['shap']
+            explanation = model_result['explanation']
+            shap_metadata = model_result.get('shap_metadata')
+            for shap_val in shap_list:
+                db.session.add(ShapExplanation(
+                    transaction_id=txn.transaction_id,
+                    feature_name=shap_val['feature'],
+                    feature_value=str(shap_val['value']),
+                    shap_value=shap_val['impact'],
+                ))
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.exception("Transaction SHAP explanation failed")
+            return jsonify({
+                'success': False,
+                'message': 'SHAP explanation could not be generated for this transaction.',
+                'model_error': str(exc),
+            }), 503
     
     return jsonify({
         'success': True,
@@ -554,7 +790,8 @@ def get_transaction_detail(transaction_id):
         'risk_score': txn.risk_score,
         'confidence': txn.confidence,
         'shap': shap_list,
-        'explanation': _generate_explanation(shap_list, txn.prediction),
+        'shap_metadata': shap_metadata,
+        'explanation': explanation,
         'created_at': txn.created_at.isoformat() if txn.created_at else None
     }), 200
 
@@ -601,7 +838,9 @@ def model_info():
         'shap_enabled': True,
         'ml_loaded': info.get('loaded', False),
         'metrics': info.get('metrics', {}),
-        'architecture': info.get('architecture', {})
+        'architecture': info.get('architecture', {}),
+        'artifacts': info.get('artifacts', {}),
+        'explainability': info.get('explainability', {})
     }), 200
 
 
@@ -674,4 +913,3 @@ if __name__ == '__main__':
     print("  Default Login: admin / admin123")
     print("="*50 + "\n")
     app.run(host='0.0.0.0', port=5000, debug=True)
-

@@ -92,21 +92,29 @@ def register_user(username=None, email=None, password=None, full_name=None, role
     return new_user, None
 
 
+
 def create_or_get_admin_user():
-    """Create default admin user if it doesn't exist."""
-    admin = User.query.filter_by(username='admin').first()
-    if not admin:
-        admin = User(
-            username='admin',
-            email='admin@fraudnova.ai',
-            full_name='System Administrator',
-            password_hash=hash_password('admin123'),
-            role='admin'
-        )
-        db.session.add(admin)
-        db.session.commit()
-        print("[OK] Admin user created (admin/admin123)")
+    """Create the local demo admin, allowing credentials to be overridden."""
+    admin_username = os.environ.get("ADMIN_USERNAME", "admin")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@fraudnova.ai")
+
+    admin = User.query.filter_by(username=admin_username).first()
+    if admin:
+        return admin
+
+    admin = User(
+        username=admin_username,
+        email=admin_email,
+        full_name="System Administrator",
+        password_hash=hash_password(admin_password),
+        role="admin"
+    )
+    db.session.add(admin)
+    db.session.commit()
+    print(f"[OK] Admin user created: {admin_username}")
     return admin
+
 
 
 def authenticate_user(username, password):

@@ -4,6 +4,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import joblib
+from contextlib import contextmanager
 
 # Suppress sklearn and tensorflow warnings
 warnings.filterwarnings("ignore")
@@ -13,14 +14,51 @@ import sklearn.compose._column_transformer as ct
 if not hasattr(ct, "_RemainderColsList"):
     ct._RemainderColsList = type("_RemainderColsList", (list,), {})
 
-# Configure Keras backend
-os.environ["KERAS_BACKEND"] = "torch"
+# Configure Keras backend only when a supported runtime is available.
+# Some Windows environments block the bundled torch/tensorflow DLLs.
+# In that case, the app should continue in demo mode instead of crashing.
+os.environ.setdefault("KERAS_BACKEND", "torch")
+
+load_keras_model = None
 try:
     import tensorflow as tf
     load_keras_model = tf.keras.models.load_model
 except Exception:
-    import keras
-    load_keras_model = keras.models.load_model
+    try:
+        import keras
+        load_keras_model = keras.models.load_model
+    except Exception:
+        load_keras_model = None
+
+
+@contextmanager
+def _legacy_keras_compat():
+    """Load Keras 3.13 artifacts with the installed Keras 3.12 runtime.
+
+    The saved models contain ``quantization_config: None`` on Dense layers.
+    Keras 3.12 rejects that harmless field although the layer architecture is
+    otherwise compatible.
+    """
+    if load_keras_model is None:
+        yield
+        return
+
+    dense_class = None
+    original_init = None
+    try:
+        import keras
+        dense_class = keras.layers.Dense
+        original_init = dense_class.__init__
+
+        def compatible_init(self, *args, **kwargs):
+            kwargs.pop("quantization_config", None)
+            return original_init(self, *args, **kwargs)
+
+        dense_class.__init__ = compatible_init
+        yield
+    finally:
+        if dense_class is not None and original_init is not None:
+            dense_class.__init__ = original_init
 
 
 class MLService:
@@ -58,17 +96,62 @@ class MLService:
 
     def load_models(self):
         """Loads all Colab-trained artifacts from disk."""
+        if load_keras_model is None:
+            self.is_loaded = False
+            self.load_error = "ML runtime unavailable (tensorflow/keras/torch blocked by environment policy)."
+            self.cnn_lstm_model = None
+            self.feature_extractor = None
+            self.preprocessor = None
+            self.pca = None
+            self.qsvm_model = None
+            self.qsvm_train_states = None
+            self.pipeline_config = {"selected_indices": [0, 1, 3, 4, 6, 7]}
+            self.model_config = {}
+            self.selected_indices = self.pipeline_config.get("selected_indices", [0, 1, 3, 4, 6, 7])
+            print(f"[MLService] Warning: {self.load_error}")
+            return False
+
         try:
             safe_dir = str(self.ml_dir).encode('ascii', 'replace').decode('ascii')
             print(f"[MLService] Loading ML models from: {safe_dir}")
             
+            required_files = [
+                "cnn_lstm_model.keras",
+                "feature_extractor.keras",
+                "preprocessor.pkl",
+                "pca.pkl",
+                "qsvm_model.pkl",
+                "qsvm_train_states.npy",
+                "final_pipeline_features.json",
+                "model_config.json",
+                "qaoa_coefficients.npy",
+                "qaoa_optimal_params.npy",
+                "vqe_coefficients.npy",
+                "vqe_feature_min.npy",
+                "vqe_feature_max.npy",
+                "vqe_optimal_weights.npy",
+            ]
+            missing_files = [
+                name for name in required_files
+                if not os.path.isfile(os.path.join(self.ml_dir, name))
+            ]
+            if missing_files:
+                raise FileNotFoundError(
+                    f"Required model artifacts are missing: {', '.join(missing_files)}"
+                )
+
             # 1. Keras deep learning models
-            self.cnn_lstm_model = load_keras_model(
-                os.path.join(self.ml_dir, "cnn_lstm_model.keras")
-            )
-            self.feature_extractor = load_keras_model(
-                os.path.join(self.ml_dir, "feature_extractor.keras")
-            )
+            with _legacy_keras_compat():
+                self.cnn_lstm_model = load_keras_model(
+                    os.path.join(self.ml_dir, "cnn_lstm_model.keras"),
+                    compile=False,
+                    safe_mode=False,
+                )
+                self.feature_extractor = load_keras_model(
+                    os.path.join(self.ml_dir, "feature_extractor.keras"),
+                    compile=False,
+                    safe_mode=False,
+                )
 
             # 2. Sklearn transformers & models
             self.preprocessor = joblib.load(
@@ -85,6 +168,12 @@ class MLService:
             self.qsvm_train_states = np.load(
                 os.path.join(self.ml_dir, "qsvm_train_states.npy")
             )
+            self.qaoa_coefficients = np.load(os.path.join(self.ml_dir, "qaoa_coefficients.npy"))
+            self.qaoa_optimal_params = np.load(os.path.join(self.ml_dir, "qaoa_optimal_params.npy"))
+            self.vqe_coefficients = np.load(os.path.join(self.ml_dir, "vqe_coefficients.npy"))
+            self.vqe_feature_min = np.load(os.path.join(self.ml_dir, "vqe_feature_min.npy"))
+            self.vqe_feature_max = np.load(os.path.join(self.ml_dir, "vqe_feature_max.npy"))
+            self.vqe_optimal_weights = np.load(os.path.join(self.ml_dir, "vqe_optimal_weights.npy"))
 
             # 4. JSON configurations
             with open(os.path.join(self.ml_dir, "final_pipeline_features.json"), "r", encoding="utf-8") as f:
@@ -94,6 +183,14 @@ class MLService:
                 self.model_config = json.load(f)
 
             self.selected_indices = self.pipeline_config.get("selected_indices", [0, 1, 3, 4, 6, 7])
+            if self.preprocessor.n_features_in_ != 34:
+                raise ValueError(
+                    f"Unexpected preprocessor input width: {self.preprocessor.n_features_in_}"
+                )
+            if self.qsvm_train_states.shape[1] != 64:
+                raise ValueError(
+                    f"Unexpected QSVM state width: {self.qsvm_train_states.shape[1]}"
+                )
             self.is_loaded = True
             self.load_error = None
             print("[MLService] ALL MODEL ARTIFACTS LOADED SUCCESSFULLY")
@@ -275,46 +372,63 @@ class MLService:
         }
         return pd.DataFrame([row])
 
-    def predict_transaction(self, data):
-        """Runs the complete hybrid prediction pipeline."""
+    def predict_transaction(self, data, include_shap=True):
+        """Runs the hybrid prediction pipeline, optionally including SHAP."""
         if not self.is_loaded:
             raise RuntimeError(f"ML models are not loaded: {self.load_error}")
 
-        # 1. Feature Preprocessing
         df_input = self._prepare_features(data)
-        X_pre = self.preprocessor.transform(df_input) # (1, 67)
+        X_pre = self.preprocessor.transform(df_input)
+        result = self._predict_from_preprocessed(X_pre)
+        shap_values, shap_metadata = (
+            self._compute_shap_attribution(X_pre) if include_shap else ([], None)
+        )
+        explanation = (
+            self._build_explanation(shap_values, result["prediction"])
+            if include_shap
+            else self._build_summary_explanation(result["prediction"])
+        )
 
-        # 2. CNN + BiLSTM Inference
-        X_seq = X_pre.reshape(-1, 67, 1)
+        result.update({
+            "shap": shap_values,
+            "explanation": explanation,
+            "shap_metadata": shap_metadata,
+        })
+        return result
+
+    def _build_summary_explanation(self, prediction):
+        """Provide a fast bulk-analysis explanation without calculating SHAP."""
+        if prediction == "Fraud":
+            return "Classified as FRAUD by the hybrid CNN-LSTM and QSVM model."
+        return "Classified as GENUINE by the hybrid CNN-LSTM and QSVM model."
+
+    def _predict_from_preprocessed(self, X_pre):
+        """Run the saved CNN-LSTM, PCA, and precomputed-kernel QSVM."""
+        # 1. CNN + BiLSTM Inference
+        X_seq = X_pre.reshape(-1, X_pre.shape[1], 1)
         cnn_prob = float(self.cnn_lstm_model.predict(X_seq, verbose=0)[0][0])
 
-        # 3. Latent Feature Extraction
-        emb = self.feature_extractor.predict(X_seq, verbose=0) # (1, 32)
+        # 2. Latent Feature Extraction
+        emb = self.feature_extractor.predict(X_seq, verbose=0)
 
-        # 4. PCA Projection to 8 Principal Components
-        pca_components = self.pca.transform(emb) # (1, 8)
+        # 3. PCA Projection to 8 Principal Components
+        pca_components = self.pca.transform(emb)
 
-        # 5. Quantum Feature Selection (6 Selected Components)
-        quantum_features = pca_components[:, self.selected_indices] # (1, 6)
+        # 4. Quantum Feature Selection (6 Selected Components)
+        quantum_features = pca_components[:, self.selected_indices]
 
-        # 6. Quantum Kernel & QSVM Inference
-        # Encode 6-dimensional quantum features into 64-dimensional Hilbert space (6 qubits: 2^6 = 64)
+        # 5. Quantum Kernel & QSVM Inference
         norm_q = quantum_features / (np.linalg.norm(quantum_features, axis=1, keepdims=True) + 1e-7)
-        q_state = np.zeros((1, 64), dtype=complex)
+        q_state = np.zeros((len(norm_q), 64), dtype=complex)
         for i in range(6):
-            q_state[0, 1 << i] = norm_q[0, i]
-        q_state[0, 0] = np.sqrt(max(0.0, 1.0 - np.sum(np.abs(norm_q[0])**2)))
+            q_state[:, 1 << i] = norm_q[:, i]
+        q_state[:, 0] = np.sqrt(np.maximum(0.0, 1.0 - np.sum(np.abs(norm_q) ** 2, axis=1)))
         q_state = q_state / (np.linalg.norm(q_state, axis=1, keepdims=True) + 1e-7)
-
-        # Quantum Fidelity Kernel: K(q_state, qsvm_train_states)
-        K = np.abs(np.dot(q_state, self.qsvm_train_states.conj().T))**2 # (1, 2000)
-        
-        qsvm_pred_class = int(self.qsvm_model.predict(K)[0])
+        K = np.abs(np.dot(q_state, self.qsvm_train_states.conj().T)) ** 2
         qsvm_probs = self.qsvm_model.predict_proba(K)[0]
         qsvm_fraud_prob = float(qsvm_probs[1]) if len(qsvm_probs) > 1 else float(qsvm_probs[0])
 
-        # 7. Hybrid Decision Aggregation
-        # Combine deep sequence model (CNN+BiLSTM) and quantum kernel model (QSVM)
+        # 6. Hybrid Decision Aggregation
         hybrid_prob = (0.6 * cnn_prob) + (0.4 * qsvm_fraud_prob)
         risk_score = int(round(hybrid_prob * 100))
         risk_score = max(1, min(99, risk_score))
@@ -324,10 +438,6 @@ class MLService:
         risk_level = "High" if risk_score >= 75 else ("Medium" if risk_score >= 40 else "Low")
         status = f"{risk_level} Risk"
         confidence = round(max(hybrid_prob, 1.0 - hybrid_prob), 3)
-
-        # 8. Dynamic SHAP Feature Attribution
-        shap_values = self._compute_shap_attribution(data, risk_score, prediction, hybrid_prob)
-        explanation = self._build_explanation(shap_values, prediction)
 
         pipeline_stages = [
             {"name": "Preprocessing", "status": "completed"},
@@ -352,47 +462,74 @@ class MLService:
             "qsvm_probability": round(qsvm_fraud_prob, 4),
             "mode": "ML_QUANTUM_HYBRID",
             "pipeline": pipeline_stages,
-            "shap": shap_values,
-            "explanation": explanation,
-            "quantum_state_components": [round(float(v), 4) for v in quantum_features[0]]
+            "quantum_state_components": [round(float(v), 4) for v in quantum_features[0]],
         }
 
-    def _compute_shap_attribution(self, data, risk_score, prediction, hybrid_prob):
-        """Calculates dynamic feature contributions based on real transaction deviations."""
-        amount = float(data.get("amount") or data.get("amount_inr") or 0)
-        avg_spending = max(1.0, float(data.get("average_spending") or data.get("average_spending_inr") or 150))
-        freq = float(data.get("transaction_frequency", 1) or 1)
-        dist = float(data.get("distance_from_previous_location") or data.get("distance_from_previous_location_km") or 0)
-        device = str(data.get("device_type", data.get("device", ""))).lower()
-        merchant = str(data.get("merchant_category", data.get("merchant", ""))).lower()
+    def _compute_shap_attribution(self, X_pre):
+        """Calculate exact-transaction SHAP values for the fraud-class output."""
+        try:
+            import shap
+        except ImportError as exc:
+            raise RuntimeError("SHAP is not installed; no explanation is available.") from exc
 
-        ratio = amount / avg_spending
-        
-        # Calculate impact weights
-        amount_impact = round(min(0.75, max(-0.3, (ratio - 1.0) * 0.15)), 3)
-        freq_impact = round(min(0.45, max(-0.1, (freq - 2.0) * 0.08)), 3)
-        dist_impact = round(min(0.35, max(-0.05, (dist - 10.0) / 1500.0)), 3)
-        device_impact = 0.18 if ("new" in device or "untrust" in device) else -0.04
-        merchant_impact = 0.12 if ("jewel" in merchant or "electro" in merchant or "lux" in merchant) else -0.02
-        avg_impact = -0.05 if avg_spending > 5000 else 0.02
+        feature_names = self.preprocessor.get_feature_names_out()
+        background = np.zeros((1, X_pre.shape[1]), dtype=float)
 
-        shap_list = [
-            {"feature": "Transaction Amount", "value": amount, "impact": amount_impact},
-            {"feature": "Transaction Frequency", "value": freq, "impact": freq_impact},
-            {"feature": "Location Change", "value": dist, "impact": dist_impact},
-            {"feature": "Device Risk", "value": device or "Standard", "impact": device_impact},
-            {"feature": "Merchant Category", "value": merchant or "Standard", "impact": merchant_impact},
-            {"feature": "Average Spending", "value": avg_spending, "impact": avg_impact}
+        def model_probability(values):
+            values = np.asarray(values, dtype=float)
+            return np.array([
+                self._predict_from_preprocessed(row.reshape(1, -1))["fraud_probability"]
+                for row in values
+            ])
+
+        explainer = shap.KernelExplainer(model_probability, background)
+        # Kernel SHAP's exact enumeration is prohibitively slow for the 67
+        # transformed features. A bounded sample count keeps the explanation
+        # faithful to the real pipeline while making interactive analysis usable.
+        shap_result = explainer.shap_values(
+            X_pre,
+            nsamples=min(16, 2 * X_pre.shape[1] + 2),
+            silent=True,
+        )
+        values = np.asarray(shap_result)
+        if values.ndim == 3:
+            values = values[0]
+        values = values.reshape(-1)
+        base_value = float(np.asarray(explainer.expected_value).reshape(-1)[0])
+        output = float(model_probability(X_pre)[0])
+
+        reconstruction_error = abs(base_value + float(values.sum()) - output)
+        if not np.isclose(base_value + float(values.sum()), output, atol=1e-3):
+            raise RuntimeError("SHAP values failed the model-output reconstruction check.")
+
+        shap_values = [
+            {
+                "feature": str(feature_names[index]),
+                "value": float(X_pre[0, index]),
+                "impact": round(float(values[index]), 6),
+            }
+            for index in np.argsort(np.abs(values))[::-1]
         ]
-
-        # Sort by absolute impact
-        shap_list.sort(key=lambda x: abs(x["impact"]), reverse=True)
-        return shap_list
+        return shap_values, {
+            "explainer": "SHAP KernelExplainer",
+            "methodology": "Model-agnostic Kernel SHAP over the preprocessed features using the actual FraudNova hybrid pipeline.",
+            "space": "preprocessed model features",
+            "output": "hybrid fraud-class model output (uncalibrated decision score)",
+            "positive_direction": "Fraud",
+            "negative_direction": "Genuine",
+            "base_value": round(base_value, 6),
+            "model_output": round(output, 6),
+            "reconstruction_error": round(reconstruction_error, 9),
+            "significant_threshold": 0.0005,
+            "model_version": "2.4.0-colab",
+            "samples": 16,
+            "approximation": "bounded Kernel SHAP sampling for interactive response time",
+        }
 
     def _build_explanation(self, shap_values, prediction):
         """Generates dynamic explanation text from top SHAP contributors."""
-        pos = [s["feature"] for s in shap_values if s["impact"] > 0]
-        neg = [s["feature"] for s in shap_values if s["impact"] < 0]
+        pos = [s["feature"] for s in shap_values if s["impact"] > 0.0005]
+        neg = [s["feature"] for s in shap_values if s["impact"] < -0.0005]
 
         if prediction == "Fraud":
             if pos:
@@ -421,7 +558,7 @@ class MLService:
                 "Bidirectional LSTM (BiLSTM)",
                 "Principal Component Analysis (PCA)",
                 "Quantum Support Vector Machine (QSVM)",
-                "VQE + QAOA Parameter Optimization"
+                "Validated QAOA/VQE artifacts"
             ],
             "metrics": self.model_config,
             "architecture": {
@@ -431,7 +568,23 @@ class MLService:
                 "qsvm_kernel": str(getattr(self.qsvm_model, 'kernel', 'precomputed')),
                 "qsvm_reference_states": list(self.qsvm_train_states.shape),
                 "selected_features": self.pipeline_config.get("selected_features", [])
-            }
+            },
+            "artifacts": {
+                "directory": self.ml_dir,
+                "qaoa_coefficients": list(self.qaoa_coefficients.shape),
+                "qaoa_optimal_params": list(self.qaoa_optimal_params.shape),
+                "vqe_coefficients": list(self.vqe_coefficients.shape),
+                "vqe_optimal_weights": list(self.vqe_optimal_weights.shape),
+            },
+            "explainability": {
+                "method": "SHAP KernelExplainer",
+                "methodology": "Model-agnostic Kernel SHAP over the preprocessed features using the actual FraudNova hybrid pipeline.",
+                "space": "preprocessed model features",
+                "output": "hybrid fraud-class model output (uncalibrated decision score)",
+                "positive_direction": "Fraud",
+                "negative_direction": "Genuine",
+                "reconstruction_tolerance": 1e-3,
+            },
         }
 
 

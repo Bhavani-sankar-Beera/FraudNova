@@ -29,7 +29,13 @@ export default function TransactionTable({ rows = [] }) {
   }, [rows, searchTerm, filterStatus])
 
   const handleInspect = (txn) => {
-    navigate('/shap', { state: { transaction: txn, shap: txn.shap || [] } })
+    navigate(`/transactions/${encodeURIComponent(txn.transaction_id)}`, {
+      state: {
+        transaction: txn,
+        transactionId: txn.transaction_id,
+        returnTo: '/history'
+      }
+    })
   }
 
   return (
@@ -116,7 +122,7 @@ export default function TransactionTable({ rows = [] }) {
                         onClick={() => handleInspect(r)}
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold transition cursor-pointer"
                       >
-                        <span>Explain</span>
+                        <span>Details</span>
                         <ArrowUpRight size={13} />
                       </button>
                     </td>

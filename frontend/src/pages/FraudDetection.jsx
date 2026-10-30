@@ -1,8 +1,9 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, ArrowUpRight, AlertCircle } from 'lucide-react'
+import { ArrowUpRight, AlertCircle } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import Navbar from '../components/Navbar'
+import PageNavigation from '../components/PageNavigation'
 import TransactionForm from '../components/TransactionForm'
 import PredictionCard from '../components/PredictionCard'
 import ShapChart from '../components/ShapChart'
@@ -74,16 +75,14 @@ export default function FraudDetection() {
         <Navbar title="Analyze Transaction Security" />
         <main className="p-6 md:p-8 space-y-6 max-w-5xl mx-auto w-full">
           
-          {/* Navigation Bar */}
-          <div className="flex items-center justify-between">
-            <button
-              onClick={() => navigate('/dashboard')}
-              className="text-xs font-semibold text-gray-400 hover:text-cyan-400 flex items-center gap-1.5 transition-colors"
-            >
-              <ArrowLeft size={14} />
-              <span>Back to Command Center</span>
-            </button>
-          </div>
+          <PageNavigation
+            breadcrumbs={[
+              { label: 'Dashboard', to: '/dashboard' },
+              { label: 'Fraud Detection' }
+            ]}
+            fallback="/dashboard"
+            fallbackLabel="Back to Dashboard"
+          />
 
           <div className="space-y-6">
             <TransactionForm onSubmit={handleSubmit} loading={loading} />
@@ -150,5 +149,3 @@ export default function FraudDetection() {
     </div>
   )
 }
-
-

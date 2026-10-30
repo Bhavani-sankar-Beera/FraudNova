@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Activity, ShieldAlert, CheckCircle2, Zap, ArrowRight, Sparkles, ShieldCheck, Cpu } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import Navbar from '../components/Navbar'
+import PageNavigation from '../components/PageNavigation'
 import StatCard from '../components/StatCard'
 import FraudTrendChart from '../components/FraudTrendChart'
 import MerchantChart from '../components/MerchantChart'
@@ -85,6 +86,11 @@ export default function Dashboard() {
       <div className="flex-1 min-h-screen flex flex-col">
         <Navbar title="FraudNova AI Command Center" />
         <main className="p-6 md:p-8 space-y-6 max-w-[1600px] mx-auto w-full">
+          <PageNavigation
+            breadcrumbs={[{ label: 'Dashboard' }]}
+            fallback="/dashboard"
+            fallbackLabel="Dashboard"
+          />
           
           {/* Quick Security & Engine Status Banner */}
           <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-blue-950/40 via-cyan-950/30 to-slate-900/60 border border-cyan-500/20 p-5 shadow-[0_0_30px_rgba(6,182,212,0.08)] flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -190,4 +196,3 @@ export default function Dashboard() {
     </div>
   )
 }
-

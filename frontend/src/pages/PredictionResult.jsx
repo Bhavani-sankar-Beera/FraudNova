@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Cpu, Layers, Sparkles, ShieldCheck, Download, Share2 } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import Navbar from '../components/Navbar'
+import PageNavigation from '../components/PageNavigation'
 import PredictionCard from '../components/PredictionCard'
 import ShapChart from '../components/ShapChart'
 
@@ -34,7 +35,7 @@ export default function PredictionResult() {
               Please analyze a transaction first to generate a full quantum telemetry report.
             </p>
             <button
-              onClick={() => navigate('/predict')}
+              onClick={() => navigate('/detect')}
               className="btn-bright-cyan px-5 py-2.5 rounded-xl font-bold text-xs"
             >
               Go to Transaction Scanner
@@ -51,6 +52,15 @@ export default function PredictionResult() {
       <div className="flex-1 min-h-screen flex flex-col">
         <Navbar title={`Audit Report — ${result.transaction_id || 'Assessment'}`} />
         <main className="p-6 md:p-8 space-y-6 max-w-[1600px] mx-auto w-full">
+          <PageNavigation
+            breadcrumbs={[
+              { label: 'Dashboard', to: '/dashboard' },
+              { label: 'Fraud Detection', to: '/detect' },
+              { label: 'Prediction Result' }
+            ]}
+            fallback="/detect"
+            fallbackLabel="Back to Fraud Detection"
+          />
           
           <div className="flex items-center justify-between">
             <button
@@ -142,4 +152,3 @@ export default function PredictionResult() {
     </div>
   )
 }
-

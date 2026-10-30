@@ -1,50 +1,63 @@
+
 #!/usr/bin/env python
 """
 Database initialization script for FraudNova AI.
-Creates tables and populates with default data.
+Creates tables and populates demo data when the database is empty.
 """
 
-import sys
 import os
+import sys
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(__file__))
+# Add backend directory to the Python path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app import app, db
-from models import User, Transaction, ShapExplanation
+from models import User, Transaction
 from auth import hash_password
 
 
 def init_database():
-    """Initialize the database with tables and default data."""
+    """Initialize database tables, admin account, and demo transactions."""
+
     print("Initializing FraudNova AI database...")
-    
+
     with app.app_context():
-        # Drop all tables (optional, comment out to preserve existing data)
-        # db.drop_all()
-        
-        # Create all tables
+        # Create tables without deleting existing data
         db.create_all()
-        print("✓ Database tables created")
-        
-        # Create default admin user
-        admin = User.query.filter_by(username='admin').first()
-        if not admin:
+        print("[OK] Database tables created or already exist.")
+
+        # Use demo credentials locally; environment variables can override them.
+        admin_username = os.environ.get("ADMIN_USERNAME", "admin")
+        admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+        admin_email = os.environ.get(
+            "ADMIN_EMAIL", "admin@fraudnova.ai"
+        )
+
+        # Create admin only if credentials are configured
+        admin = User.query.filter_by(
+            username=admin_username
+        ).first()
+
+        if admin:
+            print(f"[OK] Admin user already exists: {admin_username}")
+
+        else:
             admin = User(
-                username='admin',
-                password_hash=hash_password('admin123'),
-                role='admin'
+                username=admin_username,
+                email=admin_email,
+                full_name="System Administrator",
+                password_hash=hash_password(admin_password),
+                role="admin"
             )
+
             db.session.add(admin)
             db.session.commit()
-            print("✓ Admin user created (username: admin, password: admin123)")
-        else:
-            print("✓ Admin user already exists")
-        
-        # Check if demo transactions already exist
+            print(f"[OK] Admin user created: {admin_username}")
+
+        # Insert demo transactions only if the database is empty
         existing_count = Transaction.query.count()
+
         if existing_count == 0:
-            # Add a few demo transactions
             demo_txns = [
                 {
                     "transaction_id": "TXN1001",
@@ -96,21 +109,26 @@ def init_database():
                     "prediction": "Not Fraud",
                     "risk_score": 8,
                     "confidence": 0.92
-                },
+                }
             ]
-            
+
             for txn_data in demo_txns:
                 txn = Transaction(**txn_data)
                 db.session.add(txn)
-            
+
             db.session.commit()
-            print(f"✓ {len(demo_txns)} demo transactions inserted")
+            print(
+                f"[OK] Inserted {len(demo_txns)} demo transactions."
+            )
+
         else:
-            print(f"✓ Database already contains {existing_count} transactions")
-        
-        print("\n✓ Database initialization complete")
-        print(f"Database location: {os.path.join(os.path.dirname(__file__), 'fraudnova.db')}")
+            print(
+                f"[OK] Database already contains "
+                f"{existing_count} transactions."
+            )
+
+        print("[OK] Database initialization complete.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     init_database()

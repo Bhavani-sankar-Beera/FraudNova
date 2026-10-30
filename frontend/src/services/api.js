@@ -111,7 +111,7 @@ export async function getTransactions(page = 1, limit = 50, search = '', filter 
 
 // Get specific transaction details with SHAP values
 export async function getTransactionDetail(transactionId) {
-  return api.get(`/transactions/${transactionId}`)
+  return api.get(`/transactions/${transactionId}`, { timeout: 120000 })
 }
 
 // Real-time alerts
@@ -124,5 +124,35 @@ export async function getModelInfo() {
   return api.get('/model-info')
 }
 
-export default api
+export async function analyzeBulk(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return api.post('/bulk/analyze', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000
+  })
+}
 
+export function bulkTemplateUrl() {
+  return `${baseURL}/bulk/template`
+}
+
+export function bulkExportUrl(batchId, format) {
+  return `${baseURL}/bulk/${batchId}/export?format=${format}`
+}
+
+export function bulkValidationReportUrl(batchId) {
+  return `${baseURL}/bulk/${batchId}/validation-report`
+}
+
+export async function getBulkTransactionShap(batchId, transactionId) {
+  return api.get(`/bulk/${encodeURIComponent(batchId)}/transactions/${encodeURIComponent(transactionId)}/shap`, {
+    timeout: 120000
+  })
+}
+
+export async function getBulkResults(batchId) {
+  return api.get(`/bulk/${encodeURIComponent(batchId)}`, { timeout: 30000 })
+}
+
+export default api

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import RiskBadge from './RiskBadge'
 import { 
   X, 
@@ -22,6 +22,7 @@ import { getTransactionDetail } from '../services/api'
 
 export default function TransactionDetailModal({ transaction, isOpen, onClose }) {
   const navigate = useNavigate()
+  const location = useLocation()
   const [detail, setDetail] = useState(null)
   const [loading, setLoading] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -61,7 +62,13 @@ export default function TransactionDetailModal({ transaction, isOpen, onClose })
 
   const handleOpenInShap = () => {
     onClose()
-    navigate('/shap', { state: { transaction: detail, shap: detail.shap || [] } })
+    navigate(`/transactions/${encodeURIComponent(detail.transaction_id)}`, {
+      state: {
+        transaction: detail,
+        transactionId: detail.transaction_id,
+        returnTo: location.pathname
+      }
+    })
   }
 
   const score = Number(detail.risk_score) || 0
@@ -323,7 +330,7 @@ export default function TransactionDetailModal({ transaction, isOpen, onClose })
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-cyan-300 bg-cyan-950/40 border border-cyan-500/30 hover:bg-cyan-900/50 hover:border-cyan-400 transition-all cursor-pointer"
           >
             <Cpu className="w-3.5 h-3.5" />
-            <span>Analyze in SHAP Studio</span>
+            <span>Open Transaction Details</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
 

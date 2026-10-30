@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { 
   LayoutDashboard, 
@@ -7,8 +7,9 @@ import {
   Cpu, 
   LogOut,
   Zap
+  , UploadCloud
 } from 'lucide-react'
-import { logout, getStoredUser } from '../services/api'
+import { logout, getModelInfo, getStoredUser } from '../services/api'
 import FraudNovaLogo from './FraudNovaLogo'
 
 const navItems = [
@@ -16,13 +17,27 @@ const navItems = [
   { to: '/detect', label: 'Fraud Detection', icon: ShieldAlert, badge: 'AI' },
   { to: '/history', label: 'Transaction History', icon: History, badge: null },
   { to: '/shap', label: 'SHAP Explainability', icon: Cpu, badge: null }
+  , { to: '/bulk', label: 'Bulk Analysis', icon: UploadCloud, badge: 'NEW' }
 ]
 
 export default function Sidebar() {
   const navigate = useNavigate()
+  const [modelInfo, setModelInfo] = useState(null)
   const user = getStoredUser()
   const displayName = user?.full_name || user?.username || 'Security Analyst'
   const role = (user?.role || 'analyst').toUpperCase()
+
+  useEffect(() => {
+    let active = true
+    getModelInfo()
+      .then(({ data }) => {
+        if (active) setModelInfo(data)
+      })
+      .catch(() => {
+        if (active) setModelInfo({ ml_loaded: false })
+      })
+    return () => { active = false }
+  }, [])
 
   const handleLogout = async () => {
     try {
@@ -94,19 +109,33 @@ export default function Sidebar() {
         </div>
 
         {/* System telemetry card */}
-        <div className="mt-6 p-3.5 rounded-xl bg-[#0e1930] border border-cyan-500/20 text-xs text-gray-300">
+        <button
+          type="button"
+          onClick={() => navigate('/model-intelligence')}
+          className="mt-6 w-full text-left p-3.5 rounded-xl bg-[#0e1930] border border-cyan-500/20 text-xs text-gray-300 hover:border-cyan-400/50 hover:bg-cyan-500/5 transition-all"
+          aria-label="Open FraudNova AI Model Intelligence"
+        >
           <div className="flex items-center justify-between font-semibold text-gray-200 mb-1">
             <span className="flex items-center gap-1.5 text-cyan-300">
               <Zap size={14} className="text-cyan-400" /> Quantum Node
             </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-              99.4%
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
+              modelInfo?.ml_loaded
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+            }`}>
+              {modelInfo?.ml_loaded && typeof modelInfo.metrics?.qsvm_test_accuracy === 'number'
+                ? `${(modelInfo.metrics.qsvm_test_accuracy * 100).toFixed(2)}%`
+                : 'N/A'}
             </span>
           </div>
           <p className="text-[11px] text-gray-400 leading-snug">
-            QCNN + QSVM acceleration enabled and active.
+            CNN-LSTM + QAOA + VQE + QSVM
           </p>
-        </div>
+          <p className={`text-[10px] mt-2 ${modelInfo?.ml_loaded ? 'text-emerald-300' : 'text-amber-300'}`}>
+            {modelInfo?.ml_loaded ? 'Verified pipeline available · View workflow' : 'Model status unavailable · View details'}
+          </p>
+        </button>
       </div>
 
       {/* User Profile & Logout Bottom Bar */}
