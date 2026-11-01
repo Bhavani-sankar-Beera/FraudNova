@@ -876,40 +876,53 @@ def reload_models():
 
 # ==================== Initialize Database ====================
 
+# ==================== Initialize Database ====================
+
 def init_db():
     """Initialize database tables and default data."""
     with app.app_context():
         db.create_all()
-        
-        # Check and migrate columns in users table if needed
+
         try:
             from sqlalchemy import inspect, text
             inspector = inspect(db.engine)
+
             if 'users' in inspector.get_table_names():
-                columns = [col['name'] for col in inspector.get_columns('users')]
+                columns = [
+                    col['name']
+                    for col in inspector.get_columns('users')
+                ]
+
                 if 'email' not in columns:
-                    db.session.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(120)"))
-                    db.session.commit()
-                    print("[OK] Added email column to users table")
+                    db.session.execute(
+                        text("ALTER TABLE users ADD COLUMN email VARCHAR(120)")
+                    )
+
                 if 'full_name' not in columns:
-                    db.session.execute(text("ALTER TABLE users ADD COLUMN full_name VARCHAR(120)"))
-                    db.session.commit()
-                    print("[OK] Added full_name column to users table")
+                    db.session.execute(
+                        text("ALTER TABLE users ADD COLUMN full_name VARCHAR(120)")
+                    )
+
+                db.session.commit()
+
         except Exception as e:
             db.session.rollback()
             print("Database migration check note:", str(e))
 
-        # Create or retrieve default admin user
         create_or_get_admin_user()
+
+
+# Initialize database for Render/Gunicorn
+with app.app_context():
+    init_db()
 
 
 # ==================== Main ====================
 
 if __name__ == '__main__':
-    init_db()
     print("\n" + "="*50)
     print("  FraudNova AI Backend Server Running")
     print("  URL: http://127.0.0.1:5000")
-    print("  Default Login: admin / admin123")
     print("="*50 + "\n")
+
     app.run(host='0.0.0.0', port=5000, debug=True)
